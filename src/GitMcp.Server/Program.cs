@@ -83,11 +83,35 @@ public static class ServerSetup
         {
             builder.WebHost.UseUrls(DefaultUrl);
         }
+        // Refuse requests addressed to any other host name (DNS rebinding). In code rather than only in
+        // appsettings.json, which upgrades keep as the user left it. Set AllowedHosts when serving the LAN.
+        if (string.IsNullOrEmpty(builder.Configuration["AllowedHosts"]))
+        {
+            builder.Configuration["AllowedHosts"] = "localhost;127.0.0.1;[::1]";
+        }
         AddGitMcp(builder.Services, builder.Configuration).WithHttpTransport();
 
         var app = builder.Build();
+        // A web page in the user's browser can reach a localhost server. Browsers always send Origin on such
+        // requests, so refuse any that don't come from this machine (the MCP spec requires the check). DNS
+        // rebinding is covered by AllowedHosts in appsettings.json.
+        app.Use(async (context, next) =>
+        {
+            var origin = context.Request.Headers.Origin.ToString();
+            if (origin.Length > 0 && !IsLocalOrigin(origin))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                await context.Response.WriteAsync("Cross-origin requests are not allowed.");
+                return;
+            }
+            await next(context);
+        });
         app.MapMcp("/mcp");
         app.MapGet("/", () => Results.Text($"GitMcp {Version}: MCP endpoint at /mcp\n"));
         return app;
     }
+
+    public static bool IsLocalOrigin(string origin) =>
+        Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+        && (uri.IsLoopback || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
 }

@@ -54,6 +54,35 @@ public sealed class ValidationTests
     }
 
     [Fact]
+    public async Task Drive_Root_Works_As_Allowed_Root()
+    {
+        using var probe = new TestRepo();
+        using var t = new TestRepo([Path.GetPathRoot(probe.Root)!]);
+        await t.Repo.Init(Path.Combine(probe.Root, "under-drive-root"));
+    }
+
+    [Fact]
+    public async Task Runner_Stops_Capturing_At_The_Limit()
+    {
+        using var t = await TestRepo.CreateAsync();
+        await t.CommitFileAsync("a.txt", string.Join("\n", Enumerable.Range(0, 2000)), "c1");
+        var runner = new GitRunner("git", maxCaptureChars: 100);
+        var r = await runner.RunAsync(t.Path, ["show", "HEAD"], TimeSpan.FromSeconds(60), default);
+        Assert.True(r.Success);
+        Assert.True(r.OutputDropped);
+        Assert.True(r.StdOut.Length < 1000, $"captured {r.StdOut.Length} chars");
+    }
+
+    [Fact]
+    public async Task Failing_Command_Puts_Git_Error_First()
+    {
+        using var t = await TestRepo.CreateAsync();
+        var ex = await Assert.ThrowsAsync<McpException>(() => t.Branch.Merge(t.Path, ["no-such-branch"]));
+        var secondLine = ex.Message.Split('\n')[1];
+        Assert.Contains("no-such-branch", secondLine);
+    }
+
+    [Fact]
     public async Task Failing_Command_Reports_Exit_Code_And_Stderr()
     {
         using var t = await TestRepo.CreateAsync();

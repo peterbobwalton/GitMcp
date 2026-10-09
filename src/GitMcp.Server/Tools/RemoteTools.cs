@@ -22,7 +22,7 @@ public sealed class RemoteTools(GitService git)
         [Description("Limit history depth (--depth).")] int? depth = null,
         CancellationToken ct = default)
     {
-        var args = new GitArgs("fetch", "--progress").Flag(all, "--all").Flag(prune, "--prune").Flag(tags, "--tags").Opt("--depth", depth);
+        var args = new GitArgs("fetch").Flag(all, "--all").Flag(prune, "--prune").Flag(tags, "--tags").Opt("--depth", depth);
         if (!all)
         {
             args.Ref(remote, "remote").Refs(refspecs, "refspec");
@@ -36,7 +36,7 @@ public sealed class RemoteTools(GitService git)
         [Description(RepoDescription)] string repoPath,
         [Description("Remote name. Default: the upstream remote.")] string? remote = null,
         [Description("Remote branch. Default: the upstream branch.")] string? branch = null,
-        [Description("Rebase instead of merge (--rebase).")] bool rebase = false,
+        [Description("true: rebase (--rebase); false: merge (--no-rebase); omit to follow the pull.rebase setting.")] bool? rebase = null,
         [Description("Only fast-forward (--ff-only).")] bool fastForwardOnly = false,
         [Description("Stash local changes before and restore them after (--autostash).")] bool autostash = false,
         CancellationToken ct = default)
@@ -45,7 +45,9 @@ public sealed class RemoteTools(GitService git)
         {
             throw new McpException("Pass remote together with branch.");
         }
-        var args = new GitArgs("pull", "--progress", rebase ? "--rebase" : "--no-rebase")
+        var args = new GitArgs("pull")
+            .Flag(rebase == true, "--rebase")
+            .Flag(rebase == false, "--no-rebase")
             .Flag(fastForwardOnly, "--ff-only")
             .Flag(autostash, "--autostash")
             .Ref(remote, "remote")
@@ -75,7 +77,11 @@ public sealed class RemoteTools(GitService git)
         {
             throw new McpException("Pass the branches or tags to delete in refspecs.");
         }
-        var args = new GitArgs("push", "--progress")
+        if (setUpstream && refspecs is not { Length: > 0 })
+        {
+            refspecs = ["HEAD"]; // "git push -u origin" alone fails for a branch that has no upstream yet
+        }
+        var args = new GitArgs("push")
             .Flag(setUpstream, "--set-upstream")
             .Flag(forceWithLease && !force, "--force-with-lease")
             .Flag(force, "--force")

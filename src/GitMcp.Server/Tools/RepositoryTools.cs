@@ -37,7 +37,7 @@ public sealed class RepositoryTools(GitService git)
     {
         var dest = git.ResolvePath(destination);
         var parent = Path.GetDirectoryName(dest) ?? throw new McpException("The destination cannot be a drive root.");
-        var args = new GitArgs("clone", "--progress")
+        var args = new GitArgs("clone")
             .Flag(bare, "--bare")
             .Flag(recurseSubmodules, "--recurse-submodules")
             .Opt("--depth", depth)

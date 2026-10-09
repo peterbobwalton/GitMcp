@@ -4,7 +4,8 @@ using System.Text;
 namespace GitMcp.Server.Git;
 
 /// <summary>Runs the git CLI non-interactively and captures its output.</summary>
-public sealed class GitRunner(string gitPath = "git")
+/// <param name="maxCaptureChars">Per stream; anything beyond is read and discarded (git must not block on a full pipe).</param>
+public sealed class GitRunner(string gitPath = "git", int maxCaptureChars = int.MaxValue)
 {
     public async Task<GitResult> RunAsync(string workingDirectory, IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct)
     {
@@ -39,8 +40,27 @@ public sealed class GitRunner(string gitPath = "git")
         using var process = new Process { StartInfo = psi };
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (stdout) { stdout.AppendLine(e.Data); } } };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (stderr) { stderr.AppendLine(e.Data); } } };
+        var dropped = false;
+        void Append(StringBuilder sb, string? line)
+        {
+            if (line is null)
+            {
+                return;
+            }
+            lock (sb)
+            {
+                if (sb.Length < maxCaptureChars)
+                {
+                    sb.AppendLine(line);
+                }
+                else
+                {
+                    dropped = true;
+                }
+            }
+        }
+        process.OutputDataReceived += (_, e) => Append(stdout, e.Data);
+        process.ErrorDataReceived += (_, e) => Append(stderr, e.Data);
 
         try
         {
@@ -73,7 +93,7 @@ public sealed class GitRunner(string gitPath = "git")
         string o, e;
         lock (stdout) { o = stdout.ToString(); }
         lock (stderr) { e = stderr.ToString(); }
-        return new GitResult(timedOut ? -1 : process.ExitCode, o, e, timedOut);
+        return new GitResult(timedOut ? -1 : process.ExitCode, o, e, timedOut, dropped);
     }
 
     public static string Display(IEnumerable<string> args) =>

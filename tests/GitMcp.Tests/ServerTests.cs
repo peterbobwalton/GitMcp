@@ -82,6 +82,35 @@ public sealed class ServerTests : IAsyncLifetime
         await Task.WhenAll(Work(c1, "one"), Work(c2, "two"));
     }
 
+    [Theory]
+    [InlineData("http://evil.example", null, 403)]
+    [InlineData("null", null, 403)]
+    [InlineData(null, "evil.example", 400)]
+    [InlineData("http://localhost:3000", null, 200)]
+    [InlineData(null, null, 200)]
+    public async Task Rejects_Foreign_Origins_And_Hosts(string? origin, string? host, int expected)
+    {
+        using var http = new HttpClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint)
+        {
+            Content = new StringContent(
+                """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""",
+                System.Text.Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Accept.ParseAdd("application/json");
+        request.Headers.Accept.ParseAdd("text/event-stream");
+        if (origin is not null)
+        {
+            request.Headers.Add("Origin", origin);
+        }
+        if (host is not null)
+        {
+            request.Headers.Host = host;
+        }
+        using var response = await http.SendAsync(request);
+        Assert.Equal(expected, (int)response.StatusCode);
+    }
+
     [Fact]
     public async Task Git_Failure_Comes_Back_As_Tool_Error()
     {

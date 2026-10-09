@@ -40,7 +40,7 @@ public sealed class ConfigTools(GitService git)
         {
             throw new McpException("Pass value, or set unset.");
         }
-        var args = new GitArgs("config", ScopeFlag(scope));
+        var args = new GitArgs("config").Flag(!string.IsNullOrWhiteSpace(scope), ScopeFlag(scope));
         if (unset)
         {
             args.Add("--unset");
@@ -78,9 +78,11 @@ public sealed class ConfigTools(GitService git)
         {
             throw new McpException("Pass the git arguments.");
         }
-        if (args[0] is "-C" or "--git-dir" or "--work-tree" || args[0].StartsWith("--git-dir=") || args[0].StartsWith("--work-tree="))
+        // Global options (-C, --git-dir, -c ...) would let a call escape repoPath and the allowed roots.
+        if (args[0].StartsWith('-'))
         {
-            throw new McpException("Use repoPath to choose the repository instead of -C/--git-dir/--work-tree.");
+            throw new McpException("Start args with the git subcommand (e.g. \"rev-parse\"). Global options such as -C, -c " +
+                                   "or --git-dir are not allowed; use repoPath to choose the repository.");
         }
         return readOnly ? git.ReadAsync(repoPath, args, ct) : git.WriteAsync(repoPath, args, ct, network: true);
     }
@@ -88,14 +90,20 @@ public sealed class ConfigTools(GitService git)
     private Task<string> RunAsync(string? repoPath, string? scope, bool write, IEnumerable<string> args, CancellationToken ct, int[]? okExitCodes = null)
     {
         var s = scope?.Trim().ToLowerInvariant();
-        if (s is "global" or "system" && string.IsNullOrWhiteSpace(repoPath))
+        // Global and system config are shared by every repository, so they get one lock of their own whatever
+        // repoPath says, and run where no repository can interfere.
+        if (s is "global" or "system")
         {
-            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return git.RunInAsync(home, $"<{s}-config>", write, args, ct, okExitCodes);
+            return git.RunInAsync(Path.GetTempPath(), $"<{s}-config>", write, args, ct, okExitCodes);
         }
         if (string.IsNullOrWhiteSpace(repoPath))
         {
-            throw new McpException("repoPath is required unless scope is global or system.");
+            if (write || !string.IsNullOrEmpty(s))
+            {
+                throw new McpException("repoPath is required unless scope is global or system.");
+            }
+            // Effective value outside any repository: global + system.
+            return git.RunInAsync(Path.GetTempPath(), "<global-config>", write: false, args, ct, okExitCodes);
         }
         return write ? git.WriteAsync(repoPath, args, ct) : git.ReadAsync(repoPath, args, ct, okExitCodes);
     }

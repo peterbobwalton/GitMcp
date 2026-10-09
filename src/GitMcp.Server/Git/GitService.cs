@@ -18,7 +18,8 @@ public sealed class GitService
     public GitService(IOptions<GitMcpOptions> options)
     {
         _options = options.Value;
-        _runner = new GitRunner(_options.GitPath);
+        // Capture a little more than we show, so huge output (a binary diff, a giant log) can't exhaust memory.
+        _runner = new GitRunner(_options.GitPath, _options.MaxOutputChars + 1);
         var lockDir = _options.LockDirectory
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GitMcp", "locks");
         _locks = new RepoLocks(lockDir, TimeSpan.FromSeconds(_options.LockTimeoutSeconds));
@@ -74,15 +75,23 @@ public sealed class GitService
         return full;
     }
 
-    /// <summary>The working tree root that contains <paramref name="dir"/> (so subfolders share a lock), else dir itself.</summary>
+    /// <summary>
+    /// The lock key for <paramref name="dir"/>: the repository's working tree root, so subfolders share a lock.
+    /// Linked worktrees (git worktree add) resolve to their main repository, because they share its refs.
+    /// Falls back to dir itself when it is not inside a repository.
+    /// </summary>
     public static string RepoKey(string dir)
     {
         for (var d = new DirectoryInfo(dir); d is not null; d = d.Parent)
         {
             var dotGit = Path.Combine(d.FullName, ".git");
-            if (Directory.Exists(dotGit) || File.Exists(dotGit))
+            if (Directory.Exists(dotGit))
             {
                 return Normalize(d.FullName);
+            }
+            if (File.Exists(dotGit))
+            {
+                return MainRepositoryOf(dotGit) ?? Normalize(d.FullName);
             }
             if (File.Exists(Path.Combine(d.FullName, "HEAD")) && Directory.Exists(Path.Combine(d.FullName, "objects")))
             {
@@ -90,6 +99,32 @@ public sealed class GitService
             }
         }
         return Normalize(dir);
+    }
+
+    /// <summary>For a ".git" file ("gitdir: .../.git/worktrees/x"), the main repository's key, if it can be found.</summary>
+    private static string? MainRepositoryOf(string dotGitFile)
+    {
+        try
+        {
+            var line = File.ReadLines(dotGitFile).FirstOrDefault()?.Trim();
+            if (line is null || !line.StartsWith("gitdir:", StringComparison.Ordinal))
+            {
+                return null;
+            }
+            var gitDir = Path.GetFullPath(line["gitdir:".Length..].Trim(), Path.GetDirectoryName(dotGitFile)!);
+            var commonDirFile = Path.Combine(gitDir, "commondir");
+            if (!File.Exists(commonDirFile))
+            {
+                return null; // a submodule: its own repository
+            }
+            var common = Path.TrimEndingDirectorySeparator(Path.GetFullPath(File.ReadAllText(commonDirFile).Trim(), gitDir));
+            // A non-bare main repository is keyed on its working tree, like every other call on it.
+            return Normalize(Path.GetFileName(common) == ".git" ? Path.GetDirectoryName(common)! : common);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     private string ExistingDirectory(string repo)
@@ -130,42 +165,44 @@ public sealed class GitService
 
         if (result.TimedOut)
         {
-            throw new McpException($"{GitRunner.Display(args)} timed out after {timeout.TotalSeconds:0}s and was stopped.\n{Format(result)}");
+            throw new McpException($"{GitRunner.Display(args)} timed out after {timeout.TotalSeconds:0}s and was stopped.\n{Format(result, errorFirst: true)}");
         }
-        if (!result.Success && okExitCodes?.Contains(result.ExitCode) != true)
+        // An accepted exit code (1 from "config --get" for a missing key) only counts when git said nothing on
+        // stderr: "error: invalid key" exits 1 as well.
+        var accepted = okExitCodes?.Contains(result.ExitCode) == true && string.IsNullOrWhiteSpace(result.StdErr);
+        if (!result.Success && !accepted)
         {
-            throw new McpException($"{GitRunner.Display(args)} failed (exit code {result.ExitCode}).\n{Format(result)}");
+            throw new McpException($"{GitRunner.Display(args)} failed (exit code {result.ExitCode}).\n{Format(result, errorFirst: true)}");
         }
-        return Format(result);
+        return Format(result, errorFirst: false);
     }
 
-    private string Format(GitResult r)
+    private string Format(GitResult r, bool errorFirst)
     {
-        var sb = new StringBuilder();
-        var stdout = r.StdOut.TrimEnd();
-        var stderr = r.StdErr.TrimEnd();
-        if (stdout.Length > 0)
+        // git reports many results ("Switched to branch...") on stderr. On failure stderr holds the reason, so it
+        // goes first where truncation can't cut it off.
+        var parts = new[] { r.StdOut.TrimEnd(), r.StdErr.TrimEnd() };
+        if (errorFirst)
         {
-            sb.Append(stdout);
+            Array.Reverse(parts);
         }
-        if (stderr.Length > 0)
+        var sb = new StringBuilder();
+        foreach (var part in parts.Where(p => p.Length > 0))
         {
-            // git reports progress and many results ("Switched to branch...") on stderr.
             if (sb.Length > 0)
             {
                 sb.Append("\n\n");
             }
-            sb.Append(stderr);
+            sb.Append(part);
         }
         if (sb.Length == 0)
         {
             sb.Append("(done, no output)");
         }
-        if (sb.Length > _options.MaxOutputChars)
+        if (sb.Length > _options.MaxOutputChars || r.OutputDropped)
         {
-            var total = sb.Length;
-            sb.Length = _options.MaxOutputChars;
-            sb.Append($"\n\n[output truncated: showing {_options.MaxOutputChars:N0} of {total:N0} characters; narrow the request with paths, maxCount or stat]");
+            sb.Length = Math.Min(sb.Length, _options.MaxOutputChars);
+            sb.Append($"\n\n[output truncated at {_options.MaxOutputChars:N0} characters; narrow the request with paths, maxCount or stat]");
         }
         return sb.ToString();
     }
@@ -176,6 +213,8 @@ public sealed class GitService
     private static bool IsUnder(string path, string root)
     {
         var cmp = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        return path.Equals(root, cmp) || path.StartsWith(root + Path.DirectorySeparatorChar, cmp);
+        // A drive root ("C:\") keeps its trailing separator after normalizing.
+        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+        return path.Equals(root, cmp) || path.StartsWith(prefix, cmp);
     }
 }

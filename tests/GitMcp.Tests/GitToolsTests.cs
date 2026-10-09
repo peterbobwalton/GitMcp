@@ -311,7 +311,66 @@ public sealed class GitToolsTests
         Assert.Contains("gitmcp.test=value 1", await t.Config.List(t.Path, "local"));
         await t.Config.Set("gitmcp.test", repoPath: t.Path, unset: true);
         Assert.Equal("gitmcp.test is not set.", await t.Config.Get("gitmcp.test", t.Path));
-        await Assert.ThrowsAsync<McpException>(() => t.Config.Get("user.name"));
+        await Assert.ThrowsAsync<McpException>(() => t.Config.Get("user.name", scope: "local"));
+        await Assert.ThrowsAsync<McpException>(() => t.Config.Set("gitmcp.test", "x"));
+
+        // Exit code 1 means "not set" only when git printed no error.
+        var ex = await Assert.ThrowsAsync<McpException>(() => t.Config.Get("bad key", t.Path));
+        Assert.Contains("section", ex.Message);
+
+        // Effective value with no repository: global + system, run outside any repository.
+        Assert.Equal("gitmcp.surely.unset is not set.", await t.Config.Get("gitmcp.surely.unset"));
+    }
+
+    [Fact]
+    public async Task Push_SetUpstream_Without_Refspec_Pushes_Current_Branch()
+    {
+        using var t = await TestRepo.CreateAsync();
+        await t.CommitFileAsync("a.txt", "a", "c1");
+        var bare = Path.Combine(t.Root, "remote.git");
+        await t.Repo.Init(bare, bare: true, initialBranch: "main");
+        await t.Remote.Add(t.Path, "origin", bare);
+        await t.Branch.Switch(t.Path, "brand-new", create: true);
+
+        await t.Remote.Push(t.Path, setUpstream: true);
+        Assert.Contains("[origin/brand-new]", await t.Branch.List(t.Path, verbose: true));
+    }
+
+    [Fact]
+    public async Task Pull_Follows_The_Configured_Rebase_Setting_By_Default()
+    {
+        using var t = await TestRepo.CreateAsync();
+        await t.CommitFileAsync("a.txt", "a", "c1");
+        var bare = Path.Combine(t.Root, "remote.git");
+        await t.Repo.Init(bare, bare: true, initialBranch: "main");
+        await t.Remote.Add(t.Path, "origin", bare);
+        await t.Remote.Push(t.Path, setUpstream: true);
+
+        var clone = Path.Combine(t.Root, "clone");
+        await t.Repo.Clone(bare, clone);
+        await t.Config.Set("user.name", "Clone", clone);
+        await t.Config.Set("user.email", "clone@gitmcp.local", clone);
+        await t.CommitFileAsync("b.txt", "b", "remote change", clone);
+        await t.Remote.Push(clone);
+
+        // Diverge locally, then pull with pull.rebase=true and no rebase argument: history stays linear.
+        await t.CommitFileAsync("c.txt", "c", "local change");
+        await t.Config.Set("pull.rebase", "true", t.Path);
+        await t.Remote.Pull(t.Path);
+        Assert.DoesNotContain("Merge", await t.Repo.Log(t.Path, oneline: true));
+        Assert.True(File.Exists(Path.Combine(t.Path, "b.txt")));
+    }
+
+    [Fact]
+    public async Task Linked_Worktree_Shares_The_Main_Repository_Lock()
+    {
+        using var t = await TestRepo.CreateAsync();
+        await t.CommitFileAsync("a.txt", "a", "c1");
+        var wt = Path.Combine(t.Root, "wt");
+        await t.Config.Run(t.Path, ["worktree", "add", "-b", "wt-branch", wt]);
+
+        Assert.Equal(GitMcp.Server.Git.GitService.RepoKey(t.Path), GitMcp.Server.Git.GitService.RepoKey(wt), ignoreCase: OperatingSystem.IsWindows());
+        Assert.Contains("On branch wt-branch", await t.Repo.Status(wt));
     }
 
     [Fact]
@@ -340,6 +399,8 @@ public sealed class GitToolsTests
         Assert.Contains("new message", await t.Config.Run(t.Path, ["log", "-1", "--format=%s"], readOnly: true));
         Assert.Equal("main", (await t.Config.Run(t.Path, ["rev-parse", "--abbrev-ref", "HEAD"], readOnly: true)).Trim());
         await Assert.ThrowsAsync<McpException>(() => t.Config.Run(t.Path, ["-C", "C:\\", "status"]));
+        await Assert.ThrowsAsync<McpException>(() => t.Config.Run(t.Path, ["-c", "core.sshCommand=calc", "status"]));
+        await Assert.ThrowsAsync<McpException>(() => t.Config.Run(t.Path, [@"--git-dir=C:\elsewhere", "status"]));
     }
 
     [Fact]

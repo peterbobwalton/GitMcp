@@ -49,7 +49,9 @@ dotnet run --project src\GitMcp.Server -- --stdio
 ```
 
 The HTTP server listens on localhost only by default. It uses the SDK's stateless streamable HTTP mode, so clients
-need no session affinity and survive a server restart.
+need no session affinity and survive a server restart. It refuses browser requests from other origins and requests
+addressed to other host names (DNS rebinding); if you serve it on the LAN with `--urls http://0.0.0.0:5180`, also set
+`--AllowedHosts=<machine name>`.
 
 ## Configure a client
 
@@ -87,7 +89,10 @@ All paths are absolute. `repoPath` may be the working tree or any folder inside 
 | Tags | `git_tag_list`, `git_tag_create` (annotated when `message` is set), `git_tag_delete` |
 | Remotes | `git_fetch`, `git_pull`, `git_push` (incl. `forceWithLease`, `delete`), `git_remote_list`, `git_remote_add`, `git_remote_remove`, `git_remote_set_url` |
 | Config | `git_config_get`, `git_config_set`, `git_config_list` (scope `local`, `global`, `system`, `worktree`) |
-| Anything else | `git_run` - raw arguments after `git`; set `readOnly=true` for read-only commands so they run in parallel |
+| Anything else | `git_run` - arguments after `git`, starting with the subcommand (global options like `-C`/`-c` are refused); set `readOnly=true` for read-only commands so they run in parallel |
+
+`git_pull` follows your `pull.rebase` setting unless `rebase` is given, and `git_push` with `setUpstream` and no
+refspecs pushes the current branch. Linked worktrees share their main repository's lock.
 
 Values that name refs, remotes or URLs are rejected if they start with `-`, and file paths are always passed after
 `--`, so arguments can't be smuggled in as git options. Interactive commands (`rebase -i`, `add -p`) aren't supported.
@@ -103,7 +108,7 @@ Values that name refs, remotes or URLs are rejected if they start with `-`, and 
 | `NetworkTimeoutSeconds` | 1800 | timeout for clone / fetch / pull / push / git_run |
 | `LockTimeoutSeconds` | 600 | how long a write waits for another write on the same repository |
 | `MaxOutputChars` | 200000 | longer output is truncated |
-| `AllowedRoots` | `[]` | if set, repositories must be inside one of these folders |
+| `AllowedRoots` | `[]` | if set, repositories must be inside one of these folders (clone sources and config values are not restricted) |
 | `LockDirectory` | `%LOCALAPPDATA%\GitMcp\locks` | cross-process lock files |
 
 ## Build and test
