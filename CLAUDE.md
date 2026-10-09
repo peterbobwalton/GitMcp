@@ -1,6 +1,6 @@
-# GitMcp
+﻿# GitMcp
 
-Repo: https://github.com/peterbobwalton/GitMcp (private)
+Repo: https://github.com/peterbobwalton/GitMcp (public)
 
 C# (.NET 10) MCP server wrapping the git CLI, on ModelContextProtocol(.AspNetCore) 2.2.0.
 See README.md for tools, transports, client setup and settings; docs/HANDOVER.md for current state and open items;

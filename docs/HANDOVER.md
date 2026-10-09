@@ -1,8 +1,8 @@
-# Handover (2026-10-09)
+﻿# Handover (2026-10-09)
 
 ## State
 
-- Version **0.1.1**, two commits on `main`, pushed to github.com/peterbobwalton/GitMcp (private).
+- Version **0.1.1**, two commits on `main`, pushed to github.com/peterbobwalton/GitMcp (public).
 - Installed on Pete's PC from `installer\Output\GitMcpSetup-0.1.1.exe`:
   `%APPDATA%\GitMcp\server\GitMcp.Server.exe` + `appsettings.json`.
 - `%APPDATA%\Claude\claude_desktop_config.json` has `"git": { command: <exe>, args: ["--stdio"] }`; the other six
